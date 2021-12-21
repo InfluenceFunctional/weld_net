@@ -231,157 +231,44 @@ class StackedConvolution(nn.Module):
 
         return v_out, h_out, skip
 
+class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
+    def __init__(self, configs, dataDims):
+        super(GatedPixelCNN, self).__init__()
 
-class PixelCNNWIP(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
-    def __init__(self, filters, initial_convolution_size, dilation, layers, out_maps, padding, channels, activation):
-        super(PixelCNNWIP, self).__init__()
-
-        ### initialize
-        if activation == 1:
-            self.act_func = 'relu'
-        elif activation == 2:
-            self.act_func = 'gated'
-        elif activation == 3:
-            self.act_func = 'dirichlet'
-
+        ### initialize constants
+        self.act_func = configs.activation_function
         if self.act_func == 'gated': # filter ratio - need to double a bunch of filters for gated activation
             f_rat = 2
         else:
             f_rat = 1
-        self.initial_pad = (initial_convolution_size - 1) // 2
-        kernel_size = 3 #initial_convolution_size
-        self.padding = padding
-
-        # layer & block structure
-        self.blocks = dilation # each block is a different dilation
-        self.layers_per_block = layers // self.blocks
-        initial_filters = filters
-        f_in = (np.ones(layers + 1) * filters).astype(int)
-        f_out = (np.ones(layers + 1) * filters).astype(int)
+        self.initial_pad = (configs.conv_size - 1) // 2
+        kernel_size = configs.conv_size
+        initial_convolution_size = configs.conv_size
+        padding = 1
+        channels = dataDims['channels']
+        self.layers = configs.conv_layers
+        self.filters = configs.conv_filters
+        initial_filters = configs.conv_filters
+        f_in = (np.ones(configs.conv_layers + 1) * configs.conv_filters).astype(int)
+        f_out = (np.ones(configs.conv_layers + 1) * configs.conv_filters).astype(int)
         self.h_init_activation = Activation(self.act_func, initial_filters)
         self.v_init_activation = Activation(self.act_func, initial_filters)
-
-
-        # apply dilations
-        self.dilations = (np.ones((layers // dilation) * dilation)).astype(int) # split to whole number blocks
-        for i in range(self.blocks): # apply dilation to each block
-            for j in range(self.layers_per_block):
-                self.dilations[i * self.layers_per_block + j] = i+1
-
+        out_maps = dataDims['classes'] + 1
 
         # initial layer
-        self.v_initial_convolution = nn.Conv2d(channels, f_rat * initial_filters, (self.initial_pad + 1, initial_convolution_size), 1, (padding * (self.initial_pad) + 1, padding * self.initial_pad), padding_mode='zeros', bias=False)
-        self.v_to_h_initial = nn.Conv2d(f_rat * initial_filters, f_rat * initial_filters,1, bias=False)
-        self.h_initial_convolution = MaskedConv2d_h('A', channels, channels, f_rat * initial_filters, (1, self.initial_pad+1), 1, (0, padding * self.initial_pad), padding_mode='zeros', bias=False)
-        self.h_to_skip_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=False)
-        self.h_to_h_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=False)
-
-        # stack hidden layers in blocks
-        self.conv_layer = []
-        for j in range(self.blocks):
-            self.conv_layer.append([StackedConvolution(f_in[i], f_out[i], kernel_size, padding, self.dilations[i + j * self.layers_per_block], self.act_func) for i in range(self.layers_per_block)]) # stacked convolution (no blind spot)
-        for j in range(self.blocks):
-            self.conv_layer[j] = nn.ModuleList(self.conv_layer[j])
-        self.conv_layer = nn.ModuleList(self.conv_layer)
-
-        #output layers
-        fc_filters = 64
-        #self.fc_activation = Activation(self.act_func, fc_filters // f_rat)
-        self.fc1 = nn.Conv2d(f_out[-1], fc_filters, (1,1), bias=True) # add skip connections
-        self.fc2 = nn.Conv2d(fc_filters, out_maps * channels, 1, bias=False) # gated activation cuts filters by 2
-
-        #self.init_conv = nn.Conv2d(1,f_out[-1],(2,3),1,0,1,bias=True)
-
-    def forward(self, input):
-        # initial convolution
-        v_data = self.v_initial_convolution(input)[:, :, :-2, :]  # align with h-stack
-        v_to_h_data = self.v_to_h_initial(v_data)#[:,:,:-1,:] # align with h-stack
-        h_data = self.h_initial_convolution(input)[:,:,self.initial_pad:,:-self.initial_pad] # unpad rhs of image
-        v_data = self.v_init_activation(v_data)
-        #h_data = self.h_init_activation(torch.cat((v_to_h_data, h_data), dim=1))
-        h_data = self.h_init_activation(v_to_h_data + h_data)
-
-        skip = self.h_to_skip_initial(h_data)
-        h_data = self.h_to_h_initial(h_data)
-
-        # hidden layers
-        for i in range(self.blocks):
-            for j in range(self.layers_per_block):
-                v_data, h_data, skip_i = self.conv_layer[i][j](v_data, h_data) # stacked convolutions fix blind spot
-                if self.padding == 1:
-                    skip = torch.add(skip,skip_i)
-                else:
-                    skip = torch.add(skip[:,:,1:,1:-1],skip_i)
-
-        # output convolutions
-        #x = self.fc_activation(self.fc1(skip))
-        x = F.relu(self.fc1(F.relu(skip)))
-        x = self.fc2(x)
-
-        #x = self.init_conv(input)[:,:,1:,:]
-        #x = F.relu(self.fc1(x))
-        #x = self.fc2(x)
-
-        return x[:,:,1:,:]
-
-class PixelCNN2(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
-    def __init__(self, filters, initial_convolution_size, dilation, layers, out_maps, padding, channels, activation):
-        super(PixelCNN2, self).__init__()
-
-        ### initialize
-        if activation == 1:
-            self.act_func = 'relu'
-        elif activation == 2:
-            self.act_func = 'gated'
-        elif activation == 3:
-            self.act_func = 'dirichlet'
-
-        if self.act_func == 'gated': # filter ratio - need to double a bunch of filters for gated activation
-            f_rat = 2
-        else:
-            f_rat = 1
-        self.initial_pad = (initial_convolution_size - 1) // 2
-        kernel_size = 3 #initial_convolution_size
-
-        # layer & block structure
-        self.blocks = dilation # each block is a different dilation
-        self.layers_per_block = layers // self.blocks
-        initial_filters = filters
-        f_in = (np.ones(layers + 1) * filters).astype(int)
-        f_out = (np.ones(layers + 1) * filters).astype(int)
-        self.h_init_activation = Activation(self.act_func, initial_filters)
-        self.v_init_activation = Activation(self.act_func, initial_filters)
-
-
-        # apply dilations
-        self.dilations = (np.ones((layers // dilation) * dilation)).astype(int) # split to whole number blocks
-        for i in range(self.blocks): # apply dilation to each block
-            for j in range(self.layers_per_block):
-                self.dilations[i * self.layers_per_block + j] = i+1
-
-
-        # initial layer
-        #self.v_initial_convolution = nn.Conv2d(channels, f_rat * initial_filters, (self.initial_pad + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=True)
         self.v_initial_convolution = nn.Conv2d(channels, f_rat * initial_filters, (self.initial_pad + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=False)
-        #self.v_to_h_initial = nn.Conv2d(f_rat * initial_filters, f_rat * initial_filters,1, bias=True)
         self.v_to_h_initial = nn.Conv2d(f_rat * initial_filters, f_rat * initial_filters, 1, bias=False)
-        #self.h_initial_convolution = MaskedConv2d_h('A', channels, channels, f_rat * initial_filters, (1, self.initial_pad+1), 1, padding * (0, self.initial_pad), padding_mode='zeros', bias=True)
         self.h_initial_convolution = MaskedConv2d_h('A', channels, channels, f_rat * initial_filters, (1, self.initial_pad + 1), 1, padding * (0, self.initial_pad), padding_mode='zeros', bias=False)
         self.h_to_skip_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=False)
         self.h_to_h_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=False)
 
         # stack hidden layers in blocks
-        self.conv_layer = []
-        for j in range(self.blocks):
-            self.conv_layer.append([StackedConvolution(f_in[i], f_out[i], kernel_size, padding, self.dilations[i + j * self.layers_per_block], self.act_func) for i in range(self.layers_per_block)]) # stacked convolution (no blind spot)
-        for j in range(self.blocks):
-            self.conv_layer[j] = nn.ModuleList(self.conv_layer[j])
+        self.conv_layer = [StackedConvolution(f_in[i], f_out[i], kernel_size, padding, 1, self.act_func) for i in range(configs.conv_layers)] # stacked convolution (no blind spot)
         self.conv_layer = nn.ModuleList(self.conv_layer)
 
         #output layers
-        fc_filters = 128
+        fc_filters = configs.conv_filters
         self.fc_activation = Activation(self.act_func, fc_filters // f_rat)
-        #self.fc1 = nn.Conv2d(f_out[-1], fc_filters, (1,1), bias=True) # add skip connections
         self.fc1 = nn.Conv2d(f_out[-1], fc_filters, (1, 1), bias=True)  # add skip connections
         self.fc2 = nn.Conv2d(fc_filters // f_rat, out_maps * channels, 1, bias=False) # gated activation cuts filters by 2
 
@@ -401,10 +288,9 @@ class PixelCNN2(nn.Module):  # Dense or residual, gated, blocked, dilated PixelC
         h_data = self.h_to_h_initial(h_data)
 
         # hidden layers
-        for i in range(self.blocks):
-            for j in range(self.layers_per_block):
-                v_data, h_data, skip_i = self.conv_layer[i][j](v_data, h_data) # stacked convolutions fix blind spot
-                skip = torch.add(skip,skip_i)
+        for i in range(self.layers):
+            v_data, h_data, skip_i = self.conv_layer[i](v_data, h_data) # stacked convolutions fix blind spot
+            skip = torch.add(skip,skip_i)
 
         # output convolutions
         x = self.fc_activation(self.fc1(skip))
@@ -448,382 +334,3 @@ class OldStackedConvolution(nn.Module):
 
         return v_out, h_out
 
-class OldPixelCNN2(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
-    def __init__(self, filters, initial_convolution_size, dilation, layers, out_maps, padding, channels):
-        super(OldPixelCNN2, self).__init__()
-
-        blocks = 1
-        ### initialize constants
-        self.padding = padding
-        self.layers_per_block = layers
-        self.blocks = blocks
-        self.layers = int(self.layers_per_block * blocks)
-        self.initial_pad = (initial_convolution_size - 1) // 2
-        self.main_pad = 1
-        initial_filters = filters
-        self.input_depth = 1 #for now just 1 channels
-        f_in = (np.ones(self.layers + 1) * filters).astype(int)
-        f_out = (np.ones(self.layers + 1) * filters).astype(int)
-        self.dilation = (np.ones(self.layers) * dilation).astype(int) # not yet in use
-
-        if self.padding == 0:
-            self.unpad = np.zeros(self.layers + 1).astype(int)
-            for i in range(1,self.layers):
-                self.unpad[i] = dilation[i].astype(int)
-
-            self.unpad [0] = (initial_convolution_size-1)//2
-        else:
-            self.unpad = np.zeros(self.layers + 1).astype(int)
-        ###
-        self.activation = Activation('gated',1)
-
-        # initial layer
-        self.v_initial_convolution = nn.Conv2d(self.input_depth, 2 * initial_filters, (initial_convolution_size//2 + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=True)
-        self.v_to_h_initial = nn.Conv2d(2 * initial_filters, initial_filters,1, bias=True)
-        self.h_initial_convolution = MaskedConv2d_h('A', self.input_depth, self.input_depth, initial_filters, (1, initial_convolution_size//2 + 1), 1, padding * (0, self.initial_pad), padding_mode='zeros', bias=True)
-        self.h_to_h_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=True)
-        #self.initial_norm = nn.BatchNorm2d(channels)
-
-
-        # stack layers in blocks
-        self.conv_layer = []
-        for j in range(blocks):
-            self.conv_layer.append([OldStackedConvolution(f_in[i + j * self.layers_per_block], f_out[i + j * self.layers_per_block], padding, self.dilation[i + j * self.layers_per_block]) for i in range(self.layers_per_block)]) # stacked convolution (no blind spot)
-        for j in range(blocks):
-            self.conv_layer[j] = nn.ModuleList(self.conv_layer[j])
-        self.conv_layer = nn.ModuleList(self.conv_layer)
-
-        #output layers
-        self.fc1 = nn.Conv2d(f_out[-1], 256, 1)
-        self.fc2 = nn.Conv2d(256 // 2, out_maps * channels, 1) # gated activation cuts filters by 2
-
-    def forward(self, input):
-        # initial convolution
-        #input = self.initial_norm(input)
-        # separate stacks
-        if self.padding == 0:
-            if self.layers == 0:
-                v_data = self.v_initial_convolution(input)[:,:,:-self.initial_pad,:]
-            else:
-                v_data = self.v_initial_convolution(input)
-            v_to_h_data = self.v_to_h_initial(v_data)
-            h_data = self.h_initial_convolution(input)
-            if self.layers == 0:
-                h_data = self.activation(torch.cat((v_to_h_data, h_data[:,:,-1:,:1]), dim=1)) # for final layer
-            else:
-                h_data = self.activation(torch.cat((v_to_h_data, h_data[:, :, self.initial_pad:, :-self.initial_pad]), dim=1))
-            #h_data = self.activation(torch.cat((v_to_h_data[:,:,0,:].unsqueeze(2), h_data[:,:,-1,0].unsqueeze(2).unsqueeze(2)), dim=1))
-        else:
-            v_data = self.v_initial_convolution(input)[:, :, :-(2 * self.initial_pad), :]  # remove extra
-            v_to_h_data = self.v_to_h_initial(v_data)[:,:,:-1,:] # align with h-stack
-            h_data = self.h_initial_convolution(input)[:,:,:,:-self.initial_pad] # unpad rhs of image
-            h_data = self.activation(torch.cat((v_to_h_data, h_data), dim=1))
-        h_data = self.h_to_h_initial(h_data)
-        v_data = self.activation(v_data)
-
-        for i in range(self.blocks): # loop over convolutional layers
-            for j in range(self.layers_per_block):
-               v_data, h_data = self.conv_layer[i][j](v_data, h_data) # stacked convolutions fix blind spot
-
-        if (self.padding == 0) and (self.layers != 0):
-            h_data = h_data[:,:,-1:,:]
-        # output convolutions
-        x = self.activation(self.fc1(h_data))
-        x = self.fc2(x)
-
-        return x
-
-class SimpleNet(nn.Module):  # a purpose-build, ULTRA simple PixelCNN to explore functional forms
-    def __init__(self, conditional, filters, initial_convolution_size, dilation, layers, out_maps, padding, channels):
-        super(SimpleNet, self).__init__()
-
-        ### initialize constants
-        self.conditional = conditional
-        self.initial_pad = (initial_convolution_size - 1) // 2
-        channels = 1 #for now just 1 channels
-        initial_filters = filters
-
-        ###
-        self.activation_type = 'relu'
-        self.activation = Activation(self.activation_type)
-        if self.activation_type == 'relu':
-            filter_ratio = 1
-        elif self.activation_type == 'gated':
-            filter_ratio = 2
-
-        ### initial layer
-        self.v_initial_convolution = nn.Conv2d(channels, filter_ratio * initial_filters, (initial_convolution_size//2 + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=False)
-        self.v_to_h_initial = nn.Conv2d(filter_ratio * initial_filters, initial_filters,1, bias=True)
-        self.h_initial_convolution = MaskedConv2d_h('A', channels, channels, initial_filters, (1, initial_convolution_size//2 + 1), 1, padding * (0, self.initial_pad), padding_mode='zeros', bias=False)
-        self.h_to_h_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=True)
-        self.v_initial_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-        self.h_initial_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-
-        #output layers
-        self.fc1 = nn.Conv2d(initial_filters, initial_filters, 1)#nn.Conv2d(filters, 16, (1,1), bias=True)
-        self.fc1_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-        self.fc11 = nn.Conv2d(initial_filters, initial_filters, 1)#nn.Conv2d(filters, 16, (1,1), bias=True)
-        self.fc11_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-        self.fc12 = nn.Conv2d(initial_filters, initial_filters, 1)#nn.Conv2d(filters, 16, (1,1), bias=True)
-        self.fc12_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-        self.fc13 = nn.Conv2d(initial_filters, initial_filters, 1)#nn.Conv2d(filters, 16, (1,1), bias=True)
-        self.fc13_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-        self.fc14 = nn.Conv2d(initial_filters, initial_filters, 1)#nn.Conv2d(filters, 16, (1,1), bias=True)
-        self.fc14_conditional = nn.Linear(1, filter_ratio * initial_filters, bias=False)
-
-        self.fc2 = nn.Conv2d(initial_filters, out_maps * channels, 1)#nn.Conv2d(int(self.fc1.weight.shape[0]/filter_ratio), out_maps * channels, 1) # gated activation cuts filters by 2
-
-
-    def forward(self, input, condition):
-        # initial convolution
-        #input = self.initial_norm(input)
-        v_data = self.v_initial_convolution(input)[:, :, :-(2 * self.initial_pad), :]  # remove extra
-        v_to_h_data = self.v_to_h_initial(v_data)[:,:,:-1,:] # align with h-stack
-        h_data = self.h_initial_convolution(input)[:,:,:,:-self.initial_pad] # unpad rhs of image
-        v_conditions = torch.ones(v_data.shape[0], 1, v_data.shape[2], v_data.shape[3]).cuda().permute(0,2,3,1)
-        h_conditions = torch.ones((h_data.shape[0], 1 ,h_data.shape[2],h_data.shape[3])).cuda().permute(0,2,3,1)
-        for i in range(v_conditions.shape[0]):
-            v_conditions[i,:,:,:]=condition[i]
-            h_conditions[i,:,:,:]=condition[i]
-        #v_data = self.activation(v_data + self.v_initial_conditional(v_conditions).permute(0,3,1,2)) # manual toggle for GPU
-        if self.activation_type == 'relu':
-            h_data = self.activation(v_to_h_data + h_data + self.h_initial_conditional(h_conditions).permute(0,3,1,2))
-        elif self.activation_type == 'gated':
-            h_data = self.activation(torch.cat((v_to_h_data, h_data), dim=1) + self.h_initial_conditional(h_conditions).permute(0,3,1,2))
-
-        h_data = self.h_to_h_initial(h_data)
-
-        # output convolutions
-        x = self.activation(self.fc1(h_data) + self.fc1_conditional(h_conditions).permute(0,3,1,2))
-        x = self.activation(self.fc11(h_data) + self.fc11_conditional(h_conditions).permute(0,3,1,2))
-        x = self.activation(self.fc12(h_data) + self.fc12_conditional(h_conditions).permute(0,3,1,2))
-        x = self.activation(self.fc13(h_data) + self.fc13_conditional(h_conditions).permute(0,3,1,2))
-        x = self.activation(self.fc14(h_data) + self.fc14_conditional(h_conditions).permute(0,3,1,2))
-
-        x = self.fc2(x)
-
-        return x
-
-class PixelCNN_Discriminator(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
-    def __init__(self, filters, initial_convolution_size, dilation, layers, out_maps, padding, channels):
-        super(PixelCNN_Discriminator, self).__init__()
-
-        padding = 0
-        self.initial_convolution = nn.Conv2d(channels, 2*filters, initial_convolution_size, 1, int(padding * (initial_convolution_size - 1) // 2), padding_mode='zeros', bias=False)
-        self.hidden_convolutions = nn.ModuleList([nn.Conv2d(filters, filters, 3, 1, padding, padding_mode='zeros', bias=True) for i in range(layers)])
-        self.shrink_features = nn.ModuleList([nn.Conv2d(2 * filters, filters, 1) for i in range(layers)])
-        self.grow_features = nn.ModuleList([nn.Conv2d(filters, 2 * filters, 1) for i in range(layers)])
-        self.conv_field = layers + initial_convolution_size // 2
-
-        self.fc1 = nn.Conv2d(2 * filters, 256, 1)
-        self.fc2 = nn.Conv2d(256, out_maps * channels, 1)
-
-    def forward(self, x): # pre-activated residual model
-        #x[:,:,x.shape[-2]//2,x.shape[-1]//2]=0 # blind the central pixel (one we are trying to predict)
-        x = F.relu(self.initial_convolution(x))
-
-        for i in range(len(self.hidden_convolutions)):
-            residue = x
-            x = self.shrink_features[i](F.relu(x))
-            x = self.hidden_convolutions[i](F.relu(x))
-            x = self.grow_features[i](F.relu(x))
-            x += residue[:,:,1:-1,1:-1] # unpad residue
-
-        x = self.fc2(F.relu(self.fc1(x)))
-        return x
-
-class brutesolver(nn.Module):  # a manually initialized correlation solver
-    def __init__(self):
-        super(brutesolver, self).__init__()
-
-        # define correlations
-        conv_range = 5
-        self.corr_order = 5
-        kernel_size = (2* conv_range + 1)**2 // 2 # number of unmasked pixels we can correlate with within range conv_range
-        perms = 0 # not counting density coefficient
-        for i in range(1,self.corr_order + 1):
-            perms += special.comb(kernel_size, i, repetition=False)
-
-        perms = int(perms)
-
-        correlations = []
-        for i in range(1, self.corr_order + 1): # define all possible correlations in list space
-            correlations.append(np.asarray(list(combinations(np.arange(kernel_size),i))))
-
-        filters = np.zeros((perms, kernel_size + conv_range + 1)) # need to 'complete the square' - extra terms in the last row
-        self.corr_order_index = torch.zeros(perms) # list correlation order
-        self.corr_indices = torch.zeros(self.corr_order + 1).int()
-        ind = 0
-        for i in range(1,self.corr_order + 1): # define correlations (convolutional filters) in list space
-            for j in range(int(special.comb(kernel_size, i, repetition=False))):
-                for k in range(i):
-                    filters[ind,correlations[i - 1][j,k]] = 1
-                    self.corr_order_index[ind] = i
-                ind += 1
-            self.corr_indices[i] = j + self.corr_indices[i-1] + 1
-
-        # convert filters from list space to pixel space
-        self.filters = filters.reshape(perms, conv_range + 1, 2*conv_range + 1)
-
-        # initialize trainable parameters (coefficients)
-        self.correlation = nn.Linear(perms, 1, bias=False)
-        nn.init.constant_(self.correlation.weight, 0) #initialize filters at zero
-        self.den_corr = nn.Linear(1,1,bias=True)
-        self.conditional = 0
-
-    def forward(self, x):
-        filters = (torch.Tensor(self.filters).cuda()).unsqueeze(1)
-        conv_field = filters.shape[-1]//2
-
-        x = torch.tensor(x==1).float().cuda() # kill empties
-
-        conv_out = F.conv2d(x, filters, stride=1, padding=(conv_field), dilation = 1)[:, :, : -conv_field, :]
-        for i in range(1, self.corr_order + 1):
-            conv_out[:,self.corr_indices[i-1]:self.corr_indices[i],:,:]=conv_out[:,self.corr_indices[i-1]:self.corr_indices[i],:,:]== i
-
-        conv_out = conv_out.permute(0,2,3,1)
-        y = self.correlation(conv_out)[:,:,:,0] # sum of all convolution coefficients
-        y = y + self.den_corr(torch.zeros(1).cuda()) # linear density coefficient
-
-        out = torch.zeros((y.shape[0],3,y.shape[-2],y.shape[-1])).cuda()
-        out[:,2,:,:]=y
-        out[:,1,:,:]=-y
-        out[:,0,:,:]=-100
-
-        return out
-
-
-
-
-''' version from July 27
-class PixelCNN2(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
-    def __init__(self, conditional, filters, initial_convolution_size, dilation, layers, out_maps, padding, channels):
-        super(PixelCNN2, self).__init__()
-
-        ### initialize constants
-        self.dense = 1
-        self.conditional = conditional
-        self.blocks = dilation # each block is a different dilation
-        self.initial_pad = (initial_convolution_size - 1) // 2
-        input_depth = 1 #for now just 1 channels
-        initial_filters = filters
-        self.dilations = (np.ones((layers // dilation) * dilation)).astype(int) # split to whole number blocks
-        self.layers_per_block = layers // self.blocks
-        if self.dense == 0:
-            f_in = (np.ones(layers + 1) * filters).astype(int)
-            f_out = (np.ones(layers + 1) * filters).astype(int)
-        elif self.dense == 1:
-            f_in = ((np.arange(self.layers_per_block) + 1) * filters).astype(int)
-            f_out = (np.ones(self.layers_per_block) * filters).astype(int)
-
-        for i in range(self.blocks): # apply dilation to each block
-            for j in range(self.layers_per_block):
-                self.dilations[i * self.layers_per_block + j] = i+1
-
-        blindness = np.zeros(self.layers_per_block)  # re-blind the network at set intervals to enable quicker generation
-        for i in range(len(blindness)):
-            if ((i+1) % 2) == 0:
-                blindness[i]=0
-        ###
-        self.activation = Activation('gated')
-
-        # initial layer
-        self.v_initial_convolution = nn.Conv2d(input_depth, 2 * initial_filters, (initial_convolution_size//2 + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=True)
-        self.v_to_h_initial = nn.Conv2d(2 * initial_filters, initial_filters,1, bias=True)
-        self.h_initial_convolution = MaskedConv2d_h('A', input_depth, input_depth, initial_filters, (1, initial_convolution_size//2 + 1), 1, padding * (0, self.initial_pad), padding_mode='zeros', bias=True)
-        self.h_to_h_initial = nn.Conv2d(initial_filters, initial_filters, 1, bias=True)
-        if conditional == 1:
-            self.v_initial_conditional = nn.Linear(2 * initial_filters, 2 * initial_filters,bias=False)
-            self.h_initial_conditional = nn.Linear(2 * initial_filters, 2 * initial_filters,bias=False)
-        #self.initial_norm = nn.InstanceNorm2d(channels)
-
-        # stack layers in blocks
-        self.conv_layer = []
-        for j in range(self.blocks):
-            self.conv_layer.append([StackedConvolution(self.conditional, blindness[i], self.dense, f_in[i] + (j * filters)*self.dense, f_out[i], padding, self.dilations[i + j * self.layers_per_block]) for i in range(self.layers_per_block)]) # stacked convolution (no blind spot)
-        for j in range(self.blocks):
-            self.conv_layer[j] = nn.ModuleList(self.conv_layer[j])
-        self.conv_layer = nn.ModuleList(self.conv_layer)
-
-        #output layers
-        if self.dense == 0:
-            self.fc1 = nn.Conv2d(f_out[-1], 128, (1,1), bias=True)
-        elif self.dense == 1:
-            self.fc1 = nn.Conv2d((filters * self.blocks)+initial_filters, 128, (1,1), bias=True)
-        self.fc2 = nn.Conv2d(64, out_maps * channels, 1) # gated activation cuts filters by 2
-
-    def forward(self, input, condition):
-        # initial convolution
-        #input = self.initial_norm(input)
-        if self.dense == 0:
-            v_data = self.v_initial_convolution(input)[:, :, :-(2 * self.initial_pad), :]  # remove extra
-            v_to_h_data = self.v_to_h_initial(v_data)[:,:,:-1,:] # align with h-stack
-            h_data = self.h_initial_convolution(input)[:,:,:,:-self.initial_pad] # unpad rhs of image
-            if self.conditional == 0:
-                v_data = self.activation(v_data)
-                h_data = self.activation(torch.cat((v_to_h_data, h_data), dim=1))
-            elif self.conditional == 1:
-                v_conditions = torch.ones(v_data.size()).cuda().permute(0,2,3,1)
-                h_conditions = torch.ones((h_data.shape[0],h_data.shape[1]*2,h_data.shape[2],h_data.shape[3])).cuda().permute(0,2,3,1)
-                for i in range(v_conditions.shape[0]):
-                    v_conditions[i,:,:,:]=condition[i]
-                    h_conditions[i,:,:,:]=condition[i]
-                v_data = self.activation(v_data + self.v_initial_conditional(v_conditions).permute(0,3,1,2)) # manual toggle for GPU
-                h_data = self.activation(torch.cat((v_to_h_data, h_data), dim=1) + self.h_initial_conditional(h_conditions).permute(0,3,1,2))
-
-            h_data = self.h_to_h_initial(h_data)
-
-            for i in range(self.blocks): # loop over convolutional layers
-                for j in range(self.layers_per_block):
-                   v_data, h_data = self.conv_layer[i][j](v_data, h_data, condition) # stacked convolutions fix blind spot
-        elif self.dense == 1:
-            h_residues = []
-            v_residues = []
-            #h_residues.append(input)
-            #v_residues.append(input)
-
-            # initial convolution
-            v_data = self.v_initial_convolution(input)[:, :, :-(2 * self.initial_pad), :]  # remove extra
-            v_to_h_data = self.v_to_h_initial(v_data)[:,:,:-1,:] # align with h-stack
-            h_data = self.h_initial_convolution(input)[:,:,:,:-self.initial_pad] # unpad rhs of image
-            if self.conditional == 0:
-                v_data = self.activation(v_data)
-                h_data = self.activation(torch.cat((v_to_h_data, h_data), dim=1))
-            elif self.conditional == 1:
-                v_conditions = torch.ones(v_data.size()).cuda().permute(0, 2, 3, 1)
-                h_conditions = torch.ones((h_data.shape[0], h_data.shape[1] * 2, h_data.shape[2], h_data.shape[3])).cuda().permute(0, 2, 3, 1)
-                for i in range(v_conditions.shape[0]):
-                    v_conditions[i, :, :, :] = condition[i]
-                    h_conditions[i, :, :, :] = condition[i]
-                v_data = self.activation(v_data + self.v_initial_conditional(v_conditions).permute(0,3,1,2))
-                h_data = self.activation(torch.cat((v_to_h_data, h_data), dim=1) + self.h_initial_conditional(h_conditions).permute(0,3,1,2))
-
-            h_data = self.h_to_h_initial(h_data)
-
-            h_residues.append(h_data)
-            v_residues.append(v_data)
-
-            for i in range(self.blocks): # loop over convolutional blocks
-                h_block_residues = []
-                v_block_residues = []
-                h_block_residues.append(torch.cat(h_residues, 1))
-                v_block_residues.append(torch.cat(v_residues, 1))
-                for j in range(self.layers_per_block): # loop over layers
-                    v_data, h_data = self.conv_layer[i][j](torch.cat(v_block_residues, 1), torch.cat(h_block_residues, 1), condition) # stacked convolutions fix blind spot
-                    h_block_residues.append(h_data)
-                    v_block_residues.append(v_data)
-
-                h_residues.append(h_data)
-                v_residues.append(v_data)
-
-
-        # output convolutions
-        if self.dense == 0:
-            x = self.activation(self.fc1(h_data))
-        elif self.dense == 1:
-            x = self.activation(self.fc1(torch.cat(h_residues, 1)))
-        x = self.fc2(x)
-
-        return x
-
-'''
