@@ -15,7 +15,7 @@ from tqdm import tqdm as barthing
 from accuracy_metrics import *
 from models import *
 from Image_Processing_Utils import *
-
+import h5py
 
 
 class build_dataset(Dataset):
@@ -24,7 +24,34 @@ class build_dataset(Dataset):
         if configs.training_dataset == 'fake welds':
             self.samples = np.load('data/fake_welds.npy', allow_pickle=True).astype('bool')
             self.samples = np.expand_dims(self.samples, axis=1)
+        elif configs.training_dataset == 'welds 1':
+            file = 'C:/Users\mikem\Desktop\weld_data/480-450-dx0.8_G230000-245000_vp0.0022-0.0023_database.h5'
+            self.samples = []
+            self.conditions = []
+            with h5py.File(file, "r") as f:
+                #print("Keys: %s" % f.keys())
+                group_keys = list(f.keys())
+                self.samples = [list(f[group_keys[i]]) for i in range(len(group_keys))]
+                self.conditions = np.asarray([[.23,.22],[.23,.225],[.23,.23],[.2375,.22],[.2375,.225],[.2375,.23],[.245,.22],[.245,.225],[.245,.23]])
 
+            #self.samples = np.asarray(self.samples)
+            self.samples = np.asarray(self.samples)
+            self.samples = self.samples.reshape(self.samples.shape[0] * self.samples.shape[1],self.samples.shape[-2],self.samples.shape[-1])
+
+            # augment by flips
+            flipped = np.flip(self.samples,axis=2)
+            self.samples = np.concatenate((self.samples,flipped),axis=0)
+
+            # pre-processing
+            self.samples = np.expand_dims(self.samples, axis=1)[:,:,60:,:]
+            self.samples = self.samples[:,:,::2,::2] # cut resolution
+            #quantiles = np.quantile(self.samples.flatten(), np.arange(11)/11)
+            self.samples = np.digitize(self.samples,bins=[0,0.1,0.2,0.3,0.4,0.5,0.6,1])#quantiles) # for some reason it hates quantiles - maybe the ranges are too nonlinear
+            self.samples = self.samples - np.amin(self.samples)
+            self.samples = np.rot90(self.samples,-1,axes=(2,3))
+            #self.samples = self.samples > 0.3 # coarsening
+
+        self.num_conditioning_variables = 0
         assert self.samples.ndim == 4
 
         self.dataDims = {
@@ -33,8 +60,9 @@ class build_dataset(Dataset):
             'input y dim' : self.samples.shape[-2],
             'channels' : self.samples.shape[-3],
             'dataset length' : len(self.samples),
-            'sample x dim' : self.samples.shape[-1] * configs.sample_outpaint_ratio,
-            'sample y dim' : self.samples.shape[-2] * configs.sample_outpaint_ratio
+            'sample x dim' : self.samples.shape[-1],# * configs.sample_outpaint_ratio,
+            'sample y dim' : self.samples.shape[-2] * configs.sample_outpaint_ratio,
+            'num conditioning variables' : self.num_conditioning_variables
         }
 
         np.random.shuffle(self.samples)
@@ -114,7 +142,7 @@ def get_training_batch_size(configs, model):
         except RuntimeError: # if we get an OOM, try again with smaller batch
             configs.training_batch_size = int(np.ceil(configs.training_batch_size * 0.8)) - 1
 
-    return max(int(configs.training_batch_size * 0.5),1), int(configs.training_batch_size != training_batch_0)
+    return max(int(configs.training_batch_size * 0.4),1), int(configs.training_batch_size != training_batch_0)
 
 
 def model_epoch(configs, dataDims = None, trainData = None, model=None, optimizer=None, update_gradients = True, iteration_override = 0):
@@ -350,7 +378,7 @@ def generation(configs, dataDims, model, input_analysis):
 
         total_agreement /= len(agreements)
 
-        print('tot = {:.4f}; den={:.2f}; corr={:.2f}; fourier={:.2f}; time_ge={:.1f}s'.format(total_agreement, agreements['density'], agreements['correlation'], agreements['fourier'], time_ge))
+        print('tot = {:.4f}; den={:.2f};time_ge={:.1f}s'.format(total_agreement, agreements['density'], time_ge))
         return sample, time_ge, agreements, output_analysis
 
     else:
@@ -392,17 +420,7 @@ def analyse_samples(sample):
 
 def compute_accuracy(configs, dataDims, input_analysis, output_analysis):
 
-
     input_xdim, input_ydim, sample_xdim, sample_ydim = [input_analysis['fourier2d'].shape[-1], input_analysis['fourier2d'].shape[-2], output_analysis['fourier2d'].shape[-1], output_analysis['fourier2d'].shape[-2]]
-
-    if configs.sample_outpaint_ratio > 1: # shrink inputs to meet outputs or vice-versa
-        x_difference = sample_xdim-input_xdim
-        y_difference = sample_ydim-input_ydim
-        output_analysis['fourier2d'] = output_analysis['fourier2d'][y_difference//2:-y_difference//2, x_difference//2:-x_difference//2]
-    elif configs.sample_outpaint_ratio < 1:
-        x_difference = input_xdim - sample_xdim
-        y_difference = input_ydim- sample_ydim
-        input_analysis['fourier2d'] = input_analysis['fourier2d'][y_difference // 2:-y_difference // 2, x_difference // 2:-x_difference // 2]
 
     input_xdim, input_ydim, sample_xdim, sample_ydim = [input_analysis['correlation2d'].shape[-1], input_analysis['correlation2d'].shape[-2], output_analysis['correlation2d'].shape[-1], output_analysis['correlation2d'].shape[-2]]
     if configs.sample_outpaint_ratio > 1: # shrink inputs to meet outputs or vice-versa
@@ -416,8 +434,7 @@ def compute_accuracy(configs, dataDims, input_analysis, output_analysis):
 
     agreements = {}
     agreements['density'] = np.amax((1 - np.abs(input_analysis['density'] - output_analysis['density']) / input_analysis['density'],0))
-    agreements['fourier'] = np.amax((1 - np.sum(np.abs(input_analysis['fourier2d'] - output_analysis['fourier2d'])) / (np.sum(input_analysis['fourier2d']) + 1e-8),0))
-    agreements['correlation'] = np.amax((1 - np.sum(np.abs(input_analysis['correlation2d'] - output_analysis['correlation2d'])) / (np.sum(input_analysis['correlation2d']) + 1e-8),0))
+    #agreements['correlation'] = np.amax((1 - np.sum(np.abs(input_analysis['correlation2d'] - output_analysis['correlation2d'])) / (np.sum(input_analysis['correlation2d']) + 1e-8),0))
 
     return agreements
 
@@ -515,9 +532,9 @@ def superscale_image(image, f = 1):
 def log_generation_stats(configs, epoch, experiment, sample, agreements, output_analysis):
     if configs.comet:
         for i in range(len(sample)):
-            experiment.log_image(sample[i, 0], name='epoch_{}_sample_{}'.format(epoch, i), image_scale=8)
+            experiment.log_image(np.rot90(sample[i, 0]), name='epoch_{}_sample_{}'.format(epoch, i), image_scale=4, image_colormap='hot')
         experiment.log_metrics(agreements, epoch=epoch)
 
 def log_input_stats(configs, experiment, input_analysis):
     if configs.comet:
-        experiment.log_image(input_analysis['training sample'], name = 'training example', image_scale=8)
+        experiment.log_image(np.rot90(input_analysis['training sample']), name = 'training example', image_scale=4, image_colormap='hot')

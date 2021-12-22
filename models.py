@@ -255,6 +255,10 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
         self.v_init_activation = Activation(self.act_func, initial_filters)
         out_maps = dataDims['classes'] + 1
 
+        if dataDims['num conditioning variables'] > 0:
+            self.conditioning_fc_1 = nn.Linear(dataDims['num conditioning variables'], initial_filters)
+            self.conditioning_fc_2 = nn.Linear(initial_filters, initial_filters)
+
         # initial layer
         self.v_initial_convolution = nn.Conv2d(channels, f_rat * initial_filters, (self.initial_pad + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=False)
         self.v_to_h_initial = nn.Conv2d(f_rat * initial_filters, f_rat * initial_filters, 1, bias=False)
@@ -280,7 +284,12 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
         v_data = self.v_init_activation(v_data)
         if self.act_func == 'gated':
             #h_data = self.h_init_activation(torch.cat((v_to_h_data, h_data), dim=1))
-            h_data = self.h_init_activation(v_to_h_data + h_data)
+            if False: #if self.do_conditioning:
+                pass
+                #conditional_input = self.conditioning_fc_2(F.relu(self.conditioning_fc_1(conditions)))
+                #h_data = self.h_init_activation(v_to_h_data + h_data + conditional_input)
+            else:
+                h_data = self.h_init_activation(v_to_h_data + h_data)
         else:
             h_data = self.h_init_activation(v_to_h_data + h_data)
 

@@ -53,9 +53,10 @@ def main(configs):
                 out = F.softmax(model(sample0.cuda().float()), dim=1).cpu().detach().numpy()
                 experiment.log_metric(name = 'train error', value = tr_err_hist[-1], epoch = epoch)
                 experiment.log_metric(name = 'test error', value = te_err_hist[-1], epoch = epoch)
-                experiment.log_image(superscale_image(out[0,-1,:,:],1), name = 'raw training output epoch_{}'.format(epoch), image_scale=8)
+                experiment.log_image(np.rot90(torch.argmax(torch.Tensor(out[0,:,:,:]),dim=0)) - np.rot90(sample0[0,0].cpu().detach().numpy() * (out.shape[1] - 1)),
+                                     name = 'training error epoch_{}'.format(epoch), image_scale=4, image_colormap='hot')
 
-            if epoch % 5 == 0:
+            if epoch % 20 == 0:
                 sample, time_ge, agreements, output_analysis = generation(configs, dataDims, model, input_analysis)
                 log_generation_stats(configs, epoch, experiment, sample, agreements, output_analysis)
 

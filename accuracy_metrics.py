@@ -73,7 +73,7 @@ def fourier_analysis(sample):
 
 
 def radial_fourier_analysis(transform): # convert 2D fourier transform to radial coordinates
-    x0, y0 = [transform.shape[-2] // 2 , transform.shape[-1] // 2 ]  # pick a nice central pixel
+    x0, y0 = [transform.shape[-1] // 2 , transform.shape[-2] // 2 ]  # pick a nice central pixel
     transform[y0,x0] = 0
     max_rad = transform.shape[-1] // 2 - 1 # maximum radius
     nbins = max_rad * 10  # set number of bins for sorting
@@ -188,7 +188,7 @@ def spatial_correlation2(image_set): #faster
     xdim = int(image_set.shape[-1]//2)
     ydim = int(image_set.shape[-2]//2)
     desired_samples = 1e3
-    n_samples = int(desired_samples / torch.mean(image_set.float())) // 4 # normalize against the mean
+    n_samples = min(10000, int(desired_samples / torch.mean(image_set.float())) // 4) # normalize against the mean
     attempts = 0
     sample = torch.zeros((1,ydim,xdim))
     images = image_set.type(torch.ByteTensor)  # can't take any samples which go outside of the image!
@@ -204,14 +204,14 @@ def spatial_correlation2(image_set): #faster
         for i in range(n_samples):
             slice[i,:,:,:] = images[n_rands[i],:,y_rands[i]:y_rands[i] + ydim, x_rands[i]:x_rands[i] + xdim]  # grab a random sample from the image
 
-        x0, y0 = [slice.shape[-2] // 2 - 1, slice.shape[-1] // 2 - 1]  # pick a nice central pixel
+        x0, y0 = [slice.shape[-1] // 2 - 1, slice.shape[-2] // 2 - 1]  # pick a nice central pixel
         slice = slice[slice[:, :, y0, x0] != 0]  # delete samples with zero particles at centre
         sample = torch.cat((sample,slice.float()),0)
 
     sample = np.array(sample[1:,:,:])
 
     #preprocess sample
-    max_rad = sample.shape[-1] // 2 - 1 # the radius to be explored is automatically set to the maximum possible for the sample image
+    max_rad = min(sample.shape[-1] // 2 - 1, sample.shape[-2] // 2 - 1) # the radius to be explored is automatically set to the maximum possible for the sample image
     nbins = max_rad * 500 # set number of bins for sorting
     box_size = 2 * max_rad + 1 # size of box for radial searching
 
@@ -260,7 +260,7 @@ def spatial_correlation2(image_set): #faster
         #rolling_mean2[i] = np.average(radial_corr[i-run:i])
 
     # average out the central points for easier graph viewing
-    corr[y0,x0] = np.average(corr)
+    corr[max_rad,max_rad] = np.average(corr)
     #corr2[y0,x0] = np.average(corr2)
 
     return corr, rolling_mean, bin_rad
