@@ -46,7 +46,7 @@ class build_dataset(Dataset):
             self.samples = np.expand_dims(self.samples, axis=1)[:,:,60:,:]
             self.samples = self.samples[:,:,::2,::2] # cut resolution
             #quantiles = np.quantile(self.samples.flatten(), np.arange(11)/11)
-            self.samples = np.digitize(self.samples,bins=[0,0.1,0.2,0.3,0.4,0.5,0.6,1])#quantiles) # for some reason it hates quantiles - maybe the ranges are too nonlinear
+            self.samples = np.digitize(self.samples,bins=[0,0.1,0.2,0.3,0.4,0.5,0.6,1])#quantiles) # for some reason it really hates quantiles - maybe the ranges are too nonlinear
             self.samples = self.samples - np.amin(self.samples)
             self.samples = np.rot90(self.samples,-1,axes=(2,3))
             #self.samples = self.samples > 0.3 # coarsening
@@ -62,7 +62,9 @@ class build_dataset(Dataset):
             'dataset length' : len(self.samples),
             'sample x dim' : self.samples.shape[-1],# * configs.sample_outpaint_ratio,
             'sample y dim' : self.samples.shape[-2] * configs.sample_outpaint_ratio,
-            'num conditioning variables' : self.num_conditioning_variables
+            'num conditioning variables' : self.num_conditioning_variables,
+            'conv field' : configs.conv_layers + configs.conv_size // 2
+
         }
 
         np.random.shuffle(self.samples)
@@ -113,7 +115,6 @@ def get_dataloaders(configs):
 def initialize_training(configs):
     tr, te, dataDims = get_dataloaders(configs)
     model = get_model(configs, dataDims)
-    dataDims['conv field'] = configs.conv_layers + configs.conv_size // 2
 
     optimizer = optim.AdamW(model.parameters(), amsgrad=True) #optim.SGD(net.parameters(),lr=1e-4, momentum=0.9, nesterov=True)#
 
@@ -157,6 +158,10 @@ def model_epoch(configs, dataDims = None, trainData = None, model=None, optimize
         model.eval()
 
     for i, input in enumerate(trainData):
+        if configs.subsample_images:
+            image_depth = 100
+            randind = np.random.randint(0,input.shape[-2]-max(image_depth,dataDims['conv field']))
+            input = input[:,:,randind:randind+image_depth,:] # try randomly subsampling in the transverse direction as a form of regularization
         if configs.CUDA:
             input = input.cuda(non_blocking=True)
 
@@ -390,7 +395,7 @@ def analyse_inputs(configs, dataDims):
     dataset = torch.Tensor(build_dataset(configs))  # get data
     dataset = dataset * (dataDims['classes'])
     input_analysis = analyse_samples(dataset)
-    input_analysis['training sample'] = dataset[0,0]
+    input_analysis['training samples'] = dataset[0:10,0]
 
     return input_analysis
 
@@ -537,4 +542,5 @@ def log_generation_stats(configs, epoch, experiment, sample, agreements, output_
 
 def log_input_stats(configs, experiment, input_analysis):
     if configs.comet:
-        experiment.log_image(np.rot90(input_analysis['training sample']), name = 'training example', image_scale=4, image_colormap='hot')
+        for i in range(len(input_analysis['training samples'])):
+            experiment.log_image(np.rot90(input_analysis['training samples'][i]), name = 'training example {}'.format(i), image_scale=4, image_colormap='hot')

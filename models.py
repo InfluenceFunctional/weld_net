@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import scipy.special as special
 from itertools import combinations
+import sys
 
 class MaskedConv2d_h(nn.Conv2d):  # add a mask to the regular Conv2D function, so that it cannot learn about the future
     def __init__(self, mask_type, channels, *args, **kwargs):
@@ -271,10 +272,20 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
         self.conv_layer = nn.ModuleList(self.conv_layer)
 
         #output layers
-        fc_filters = configs.conv_filters
-        self.fc_activation = Activation(self.act_func, fc_filters // f_rat)
-        self.fc1 = nn.Conv2d(f_out[-1], fc_filters, (1, 1), bias=True)  # add skip connections
-        self.fc2 = nn.Conv2d(fc_filters // f_rat, out_maps * channels, 1, bias=False) # gated activation cuts filters by 2
+        fc_filters = configs.fc_depth
+        self.fc_activation = Activation('relu', fc_filters)
+        self.fc_dropout = nn.Dropout(configs.fc_dropout_probability)
+
+        if configs.fc_norm is None:
+            self.fc_norm = nn.Identity()
+        elif configs.fc_norm == 'batch':
+            self.fc_norm = nn.BatchNorm1d(fc_filters)
+        else:
+            print(configs.fc_norm + ' is not an implemented norm')
+            sys.exit()
+
+        self.fc1 = nn.Conv2d(f_out[-1], fc_filters, kernel_size=(1,1), bias=True)  # add skip connections
+        self.fc2 = nn.Conv2d(fc_filters, out_maps * channels, kernel_size=(1,1), bias=False) # gated activation cuts filters by 2
 
     def forward(self, input):
         # initial convolution
@@ -302,7 +313,10 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
             skip = torch.add(skip,skip_i)
 
         # output convolutions
-        x = self.fc_activation(self.fc1(skip))
+        x = self.fc_norm(skip)
+        x = self.fc1(x)
+        x = self.fc_activation(x)
+        x = self.fc_dropout(x)
         x = self.fc2(x)
 
         return x
