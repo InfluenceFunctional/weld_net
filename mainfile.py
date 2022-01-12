@@ -13,10 +13,10 @@ def main(configs):
 
     if configs.CUDA:
         backends.cudnn.benchmark = True  # auto-optimizes certain backend processes
-        #model = nn.DataParallel(model)  # go to multi-GPU training
+        model = nn.DataParallel(model)  # go to multi-GPU training
         print("Using", torch.cuda.device_count(), "GPUs")
         model.to(torch.device("cuda:0"))
-        print(summary(model, [(dataDims['channels'], dataDims['input y dim'], dataDims['input x dim'])]))
+        #print(summary(model, [(dataDims['channels'], dataDims['input y dim'], dataDims['input x dim'])]))
 
     ## BEGIN TRAINING/GENERATION
     if configs.max_epochs == 0:  # no training, just samples
@@ -56,7 +56,7 @@ def main(configs):
                 experiment.log_image(np.rot90(torch.argmax(torch.Tensor(out[0,:,:,:]),dim=0)) - np.rot90(sample0[0,0].cpu().detach().numpy() * (out.shape[1] - 1)),
                                      name = 'training error epoch_{}'.format(epoch), image_scale=4, image_colormap='hot')
 
-            if epoch % 20 == 0:
+            if epoch % 10 == 0:
                 sample, time_ge, agreements, output_analysis = generation(configs, dataDims, model, input_analysis)
                 log_generation_stats(configs, epoch, experiment, sample, agreements, output_analysis)
 

@@ -34,41 +34,70 @@ class build_dataset(Dataset):
                 self.samples = [list(f[group_keys[i]]) for i in range(len(group_keys))]
                 self.conditions = np.asarray([[.23,.22],[.23,.225],[.23,.23],[.2375,.22],[.2375,.225],[.2375,.23],[.245,.22],[.245,.225],[.245,.23]])
 
-            #self.samples = np.asarray(self.samples)
-            self.samples = np.asarray(self.samples)
-            self.samples = self.samples.reshape(self.samples.shape[0] * self.samples.shape[1],self.samples.shape[-2],self.samples.shape[-1])
 
-            # augment by flips
-            flipped = np.flip(self.samples,axis=2)
+            self.conditional_mean = np.mean(self.conditions)
+            self.conditional_std = np.sqrt(np.var(self.conditions))
+            self.conditions = standardize(self.conditions)
+            samples_per_condition = np.asarray([len(samples) for samples in self.samples])
+
+            self.samples = np.asarray(self.samples) # append conditions to samples
+            self.samples = self.samples.reshape(self.samples.shape[0] * self.samples.shape[1],self.samples.shape[-2],self.samples.shape[-1])
+            self.samples = np.expand_dims(self.samples, axis=1) # image tensors should be 4D (num, channels, height, width)
+
+            # shuffle dataset
+            np.random.shuffle(self.samples)
+            # cap dataset
+            self.samples = self.samples[:configs.max_dataset_size]
+
+            # quantize
+            self.samples = np.digitize(self.samples,bins=np.linspace(0.1,0.7,10))#quantiles) # for some reason it really hates quantiles - maybe the ranges are too nonlinear
+            self.samples = self.samples - np.amin(self.samples)
+
+
+            if configs.do_conditioning:
+                condition_tensor = torch.zeros((len(self.samples), len(self.conditions[0]), self.samples.shape[-2], self.samples.shape[-1]))
+                ind = 0
+                for i in range(len(self.conditions)): # for each sample
+                    for j in range(len(self.conditions[0])): # for each condition
+                        condition_tensor[ind:ind+samples_per_condition[i],j,:,:] = self.conditions[i,j]
+                    ind += samples_per_condition[i]
+
+                self.samples = np.concatenate((self.samples,condition_tensor),axis=1) # append conditions to pixel channel
+
+
+            # augment by horizontal flips
+            flipped = np.flip(self.samples.copy(),axis=3)
             self.samples = np.concatenate((self.samples,flipped),axis=0)
 
             # pre-processing
-            self.samples = np.expand_dims(self.samples, axis=1)[:,:,60:,:]
-            self.samples = self.samples[:,:,::2,::2] # cut resolution
+            self.samples = self.samples[:,:,60:,:] # cut the top
+            self.samples = self.samples[:,:,::3,::3] # cut resolution by factor of ::x
             #quantiles = np.quantile(self.samples.flatten(), np.arange(11)/11)
-            self.samples = np.digitize(self.samples,bins=[0,0.1,0.2,0.3,0.4,0.5,0.6,1])#quantiles) # for some reason it really hates quantiles - maybe the ranges are too nonlinear
-            self.samples = self.samples - np.amin(self.samples)
+
             self.samples = np.rot90(self.samples,-1,axes=(2,3))
             #self.samples = self.samples > 0.3 # coarsening
 
-        self.num_conditioning_variables = 0
+        self.num_conditioning_variables = self.samples.shape[1] - 1
         assert self.samples.ndim == 4
 
         self.dataDims = {
             'classes' : len(np.unique(self.samples)),
             'input x dim' : self.samples.shape[-1],
             'input y dim' : self.samples.shape[-2],
-            'channels' : self.samples.shape[-3],
+            'channels' : 1, # hardcode as one so we don't get confused with conditioning variables
             'dataset length' : len(self.samples),
             'sample x dim' : self.samples.shape[-1],# * configs.sample_outpaint_ratio,
             'sample y dim' : self.samples.shape[-2] * configs.sample_outpaint_ratio,
             'num conditioning variables' : self.num_conditioning_variables,
-            'conv field' : configs.conv_layers + configs.conv_size // 2
+            'conv field' : configs.conv_layers + configs.conv_size // 2,
+            'conditional mean' : self.conditional_mean,
+            'conditional std' : self.conditional_std
 
         }
 
-        np.random.shuffle(self.samples)
-        self.samples = np.array((self.samples[0:configs.max_dataset_size] + 1)/(self.dataDims['classes'])) # normalize inputs on 0,1,2...
+        # normalize pixel inputs
+        self.samples[:,0,:,:] = np.array((self.samples[:,0] + 1)/(self.dataDims['classes'])) # normalize inputs on 0,1,2...
+
 
     def __len__(self):
         return len(self.samples)
@@ -122,6 +151,7 @@ def initialize_training(configs):
 
 
 def compute_loss(output, target):
+    target = target[:,:1]
     lossi = []
     lossi.append(F.cross_entropy(output, target.squeeze(1).long()))
     return torch.sum(torch.stack(lossi))
@@ -131,8 +161,11 @@ def get_training_batch_size(configs, model):
     finished = 0
     training_batch_0 = 1 * configs.training_batch_size
     #  test various batch sizes to see what we can store in memory
-    test_dataset = build_dataset(configs)
-    dataDims = test_dataset.dataDims
+    dataset = build_dataset(configs)
+    dataDims = dataset.dataDims
+    train_size = int(0.8 * len(dataset))  # split data into training and test sets
+    test_size = len(dataset) - train_size
+    train_dataset, test_dataset = torch.utils.data.Subset(dataset, [range(train_size),range(train_size,test_size + train_size)])  # split it the same way every time
     optimizer = optim.AdamW(model.parameters(),amsgrad=True) #optim.SGD(net.parameters(),lr=1e-4, momentum=0.9, nesterov=True)#
 
     while (configs.training_batch_size > 1) & (finished == 0):
@@ -142,8 +175,9 @@ def get_training_batch_size(configs, model):
             finished = 1
         except RuntimeError: # if we get an OOM, try again with smaller batch
             configs.training_batch_size = int(np.ceil(configs.training_batch_size * 0.8)) - 1
+            print('Training batch sized reduced to {}'.format(configs.training_batch_size))
 
-    return max(int(configs.training_batch_size * 0.4),1), int(configs.training_batch_size != training_batch_0)
+    return max(int(configs.training_batch_size * 0.25),1), int(configs.training_batch_size != training_batch_0)
 
 
 def model_epoch(configs, dataDims = None, trainData = None, model=None, optimizer=None, update_gradients = True, iteration_override = 0):
@@ -159,7 +193,7 @@ def model_epoch(configs, dataDims = None, trainData = None, model=None, optimize
 
     for i, input in enumerate(trainData):
         if configs.subsample_images:
-            image_depth = 100
+            image_depth = 80
             randind = np.random.randint(0,input.shape[-2]-max(image_depth,dataDims['conv field']))
             input = input[:,:,randind:randind+image_depth,:] # try randomly subsampling in the transverse direction as a form of regularization
         if configs.CUDA:
@@ -220,16 +254,21 @@ def generate_samples_gated(configs, dataDims, model):
 
         sample_x_padded = dataDims['sample x dim'] + 2 * dataDims['conv field'] * configs.boundary_layers
         sample_y_padded = dataDims['sample y dim'] + dataDims['conv field'] * configs.boundary_layers  # don't need to pad the bottom
+        sample_conditions = dataDims['num conditioning variables']
 
         batches = int(np.ceil(configs.n_samples/configs.sample_batch_size))
         #n_samples = sample_batch_size * batches
-        sample = torch.ByteTensor(configs.n_samples, dataDims['channels'], dataDims['sample y dim'], dataDims['sample x dim'])  # sample placeholder
+        sample = torch.zeros(configs.n_samples, dataDims['channels'], dataDims['sample y dim'], dataDims['sample x dim'])  # sample placeholder
         print('Generating {} Samples'.format(configs.n_samples))
 
         for batch in range(batches):  # can't do these all at once so we do it in batches
             print('Batch {} of {} batches'.format(batch + 1, batches))
-            sample_batch = torch.FloatTensor(configs.sample_batch_size, dataDims['channels'], sample_y_padded + 2 * dataDims['conv field'] + 1 - dataDims['conv field'] * 1, sample_x_padded + 2 * dataDims['conv field'])  # needs to be explicitly padded by the convolutional field
+            sample_batch = torch.FloatTensor(configs.sample_batch_size, dataDims['channels'] + sample_conditions, sample_y_padded + 2 * dataDims['conv field'] + 1 - dataDims['conv field'] * 1, sample_x_padded + 2 * dataDims['conv field'])  # needs to be explicitly padded by the convolutional field
             sample_batch.fill_(0)  # initialize with minimum value
+
+            if configs.do_conditioning: # assign conditions so the model knows what we want
+                for i in range(len(configs.generation_conditions)):
+                    sample_batch[:,1+i,:,:] = (configs.generation_conditions[i] - dataDims['conditional mean']) / dataDims['conditional std']
 
             if configs.CUDA:
                 sample_batch = sample_batch.cuda()
@@ -239,7 +278,7 @@ def generate_samples_gated(configs, dataDims, model):
             with torch.no_grad():  # we will not be updating weights
                 for i in tqdm.tqdm(range(dataDims['conv field'] + 1, sample_y_padded + dataDims['conv field'] + 1)):  # for each pixel
                     for j in range(dataDims['conv field'], sample_x_padded + dataDims['conv field']):
-                        for k in range(dataDims['channels']):
+                        for k in range(dataDims['channels']): # should only ever be 1
                             #out = generator(sample_batch.float())
                             out = model(sample_batch[:, :, i - dataDims['conv field'] - 1:i + dataDims['conv field'] * (1 - 1) + 1, j - dataDims['conv field']:j + dataDims['conv field'] + 1].float())
                             out = torch.reshape(out, (out.shape[0], dataDims['classes'] + 1, dataDims['channels'], out.shape[-2], out.shape[-1])) # reshape to select channels
@@ -261,15 +300,19 @@ def generate_samples_gated(configs, dataDims, model):
 
         sample_x_padded = dataDims['sample x dim'] + 2 * dataDims['conv field'] * configs.boundary_layers
         sample_y_padded = dataDims['sample y dim'] + dataDims['conv field'] * configs.boundary_layers  # don't need to pad the bottom
-
+        sample_conditions = dataDims['num conditioning variables']
 
         sample = torch.ByteTensor(configs.n_samples, dataDims['channels'], dataDims['sample y dim'], dataDims['sample x dim'])  # sample placeholder
         print('Generating {} Samples'.format(configs.n_samples))
 
         for image in range(configs.n_samples):  # can't do these all at once so we do it in batches
             print('Image {} of {} images'.format(image + 1, configs.n_samples))
-            sample_batch = torch.FloatTensor(1, dataDims['channels'], sample_y_padded + 2 * dataDims['conv field'] + 1 - dataDims['conv field'] * 1, sample_x_padded + 2 * dataDims['conv field'])  # needs to be explicitly padded by the convolutional field
+            sample_batch = torch.FloatTensor(1, dataDims['channels'] + sample_conditions, sample_y_padded + 2 * dataDims['conv field'] + 1 - dataDims['conv field'] * 1, sample_x_padded + 2 * dataDims['conv field'])  # needs to be explicitly padded by the convolutional field
             sample_batch.fill_(0)  # initialize with minimum value
+
+            if configs.do_conditioning: # assign conditions so the model knows what we want
+                for i in range(len(configs.generation_conditions)):
+                    sample_batch[:,1+i,:,:] = (configs.generation_conditions[i] - dataDims['conditional mean']) / dataDims['conditional std']
 
             if configs.CUDA:
                 sample_batch = sample_batch.cuda()
@@ -401,7 +444,8 @@ def analyse_inputs(configs, dataDims):
 
 
 def analyse_samples(sample):
-    particles = int(torch.max(sample))
+    sample = sample[:,:1,:,:] # only analyze the first channel
+    particles = int(torch.median(sample))
     sample = sample==particles # analyze binary space
     avg_density = torch.mean((sample).type(torch.float32)) # for A
     sum = torch.sum(sample)
@@ -544,3 +588,7 @@ def log_input_stats(configs, experiment, input_analysis):
     if configs.comet:
         for i in range(len(input_analysis['training samples'])):
             experiment.log_image(np.rot90(input_analysis['training samples'][i]), name = 'training example {}'.format(i), image_scale=4, image_colormap='hot')
+
+
+def standardize(data):
+    return (data - np.mean(data)) / np.sqrt(np.var(data))
