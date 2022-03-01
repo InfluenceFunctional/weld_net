@@ -91,7 +91,7 @@ class StackedConvolution(nn.Module):
         self.v_to_h_fc = nn.Conv2d(f_rat * f_out, f_rat * f_out, 1, bias=False)
         #self.h_Conv2d = nn.Conv2d(f_in, f_rat * f_out, (1, kernel_size // 2 + 1), 1, (0, padding * self.pad), dilation, bias=True, padding_mode='zeros')
         self.h_Conv2d = nn.Conv2d(f_in, f_rat * f_out, (1, kernel_size // 2 + 1), 1, (0, padding * self.pad), dilation, bias=False, padding_mode='zeros')
-        self.h_to_skip = nn.Conv2d(f_out, f_out, 1, bias=False)
+        #self.h_to_skip = nn.Conv2d(f_out, f_out, 1, bias=False)
         self.h_to_h = nn.Conv2d(f_out, f_out, 1, bias=False)
 
     def forward(self, v_in, h_in):
@@ -109,11 +109,11 @@ class StackedConvolution(nn.Module):
         h_out = self.h_activation(torch.add(h_in, v_to_h))
         v_out = self.v_activation(v_in)
 
-        skip = self.h_to_skip(h_out)
+        #skip = self.h_to_skip(h_out)
         h_out = self.h_to_h(h_out)
         h_out = torch.add(h_out, residue) # add the residue if the sizes are the same
 
-        return v_out, h_out, skip
+        return v_out, h_out#, skip
 
 class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated PixelCNN with batchnorm
     def __init__(self, configs, dataDims):
@@ -136,7 +136,7 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
         conditioning_filters = configs.init_conditioning_filters
 
         f_in = (np.ones(configs.conv_layers + 1) * configs.conv_filters).astype(int)
-        f_in[0] = initial_filters
+        f_in[0        ] = initial_filters
         f_out = (np.ones(configs.conv_layers + 1) * configs.conv_filters).astype(int)
         self.h_init_activation = Activation(self.act_func, initial_filters)
         self.v_init_activation = Activation(self.act_func, initial_filters)
@@ -145,8 +145,8 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
         self.do_conditioning = configs.do_conditioning
 
         if configs.do_conditioning:
-            self.conditioning_fc_1 = nn.Conv2d(dataDims['num conditioning variables'], conditioning_filters, kernel_size=(1,1))
-            self.conditioning_fc_2 = nn.Conv2d(conditioning_filters, initial_filters,kernel_size=(1,1))
+            self.conditioning_fc_1 = nn.Conv2d(dataDims['num conditioning variables'], conditioning_filters, kernel_size=(1, 1))
+        self.conditioning_fc_2 = nn.Conv2d(conditioning_filters, initial_filters, kernel_size=(1, 1))
 
         # initial layer
         self.v_initial_convolution = nn.Conv2d(channels, f_rat * initial_filters, (self.initial_pad + 1, initial_convolution_size), 1, padding * (self.initial_pad + 1, self.initial_pad), padding_mode='zeros', bias=False)
@@ -192,18 +192,18 @@ class GatedPixelCNN(nn.Module):  # Dense or residual, gated, blocked, dilated Pi
             v_data += conditional_input
             h_data += conditional_input
 
-        skip = self.h_to_skip_initial(h_data)
         h_data = self.h_to_h_initial(h_data)
 
         # hidden layers
         for i in range(self.layers):
-            v_data, h_data, skip_i = self.conv_layer[i](v_data, h_data) # stacked convolutions fix blind spot
+            v_data, h_data = self.conv_layer[i](v_data, h_data) # stacked convolutions fix blind spot
 
         # output convolutions
-        x = self.fc1(skip)
+        x = self.fc1(h_data)
         x = self.fc_norm(x)
         x = self.fc_activation(x)
         x = self.fc_dropout(x)
         x = self.fc2(x)
 
         return x
+

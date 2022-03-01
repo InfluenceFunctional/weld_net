@@ -92,11 +92,10 @@ class build_dataset(Dataset):
             'conv field' : configs.conv_layers + configs.conv_size // 2,
             'conditional mean' : self.conditional_mean,
             'conditional std' : self.conditional_std
-
         }
 
         # normalize pixel inputs
-        self.samples[:,0,:,:] = np.array((self.samples[:,0] + 1)/(self.dataDims['classes'])) # normalize inputs on 0,1,2...
+        self.samples[:,0,:,:] = np.array((self.samples[:,0] + 1)/(self.dataDims['classes'])) # normalize inputs on 0--1
 
 
     def __len__(self):

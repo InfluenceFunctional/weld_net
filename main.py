@@ -18,7 +18,7 @@ parser.add_argument('--init_conv_size', type=int, default= 7) # size of the init
 parser.add_argument('--conv_filters', type = int, default = 32) # number of filters per gated convolutional layer
 parser.add_argument('--init_conv_filters', type=int, default = 32) # number of filters for the first convolutional layer  # MUST BE THE SAME AS 'conv_filters'
 parser.add_argument('--conv_size', type = int, default = 3) # ODD NUMBER
-parser.add_argument('--conv_layers', type = int, default = 20) # number of layers in the convnet - should be larger than the correlation length
+parser.add_argument('--conv_layers', type = int, default = 10) # number of layers in the convnet - should be larger than the correlation length
 parser.add_argument('--dilation', type = int, default = 1) # must be 1 - greater than 1 is deprecated
 parser.add_argument('--activation_function', type = str, default = 'gated') # 'gated' is only working option
 parser.add_argument('--fc_dropout_probability', type = float, default = 0) # dropout probability on hidden FC layer(s) [0,1)
@@ -46,6 +46,7 @@ parser.add_argument('--boundary_layers', type = int, default = 0) # number of la
 parser.add_argument('--sample_outpaint_ratio', type = int, default = 4) # size of sample images, relative to the input images
 parser.add_argument('--sample_generation_mode', type = str, default = 'parallel') # 'parallel' or 'serial' - serial is currently untested
 parser.add_argument('--sample_batch_size', type = int, default = 100) # maximum sample batch size - no automated test but can generally be rather large (1e3),
+parser.add_argument('--generation_period', type = int, default = 5) # how often to run (expensive) generation during training
 # utility of higher batch sizes for parallel generation is only realized with extremely large samples
 parser.add_argument('--n_samples', type = int, default = 1) # number of samples to generate
 

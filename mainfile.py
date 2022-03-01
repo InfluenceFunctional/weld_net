@@ -56,7 +56,7 @@ def main(configs):
                 experiment.log_image(np.rot90(torch.argmax(torch.Tensor(out[0,:,:,:]),dim=0)) - np.rot90(sample0[0,0].cpu().detach().numpy() * (out.shape[1] - 1)),
                                      name = 'training error epoch_{}'.format(epoch), image_scale=4, image_colormap='hot')
 
-            if epoch % 10 == 0:
+            if epoch % configs.generation_period == 0:
                 sample, time_ge, agreements, output_analysis = generation(configs, dataDims, model, input_analysis)
                 log_generation_stats(configs, epoch, experiment, sample, agreements, output_analysis)
 
